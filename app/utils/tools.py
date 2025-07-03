@@ -1,7 +1,7 @@
 # app/utils/tools.py
 from langchain.tools import tool
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, desc
 from datetime import date, datetime
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
@@ -10,6 +10,7 @@ from app.models.db.admin_model import Admin
 from app.models.db.interview_model import Interview
 from app.models.db.temp_model import Temp
 from app.models.db.employee_model import Employee
+from app.models.db.memory_model import ChatHistory
     
 load_dotenv()
 
@@ -48,15 +49,14 @@ def set_db_session(session: AsyncSession):
 #     print("[inside tool - response]", response.content)
 #     return response.content.strip().lower() == "yes"
 
-@tool("schedule_interview", description=f"This tool can be used to schedule a new interview. Note: Today's date is {date.today().isoformat()}")
-async def schedule_interview(level1: int, level2: int, level3: int, interviewdate: str, email: str) -> dict:
+@tool("schedule_interview", description=f"This tool can be used when a user wants to schedule/create a new interview. Note: Today's date is {date.today().isoformat()}")
+async def schedule_interview(level1: int, level2: int, interviewdate: str, email: str) -> dict:
     """
         This tool inserts a column in the 'interviews' table based on the user's request.
 
         args:
-            - level1: count of number of volunteers needed for level1 or l1 support 0 if no level1 volunteers are needed
-            - level2: count of number of volunteers needed for level2 or l2 support 0 if no level2 volunteers are needed
-            - level3: count of number of volunteers needed for level3 or l3 support 0 if no level3 volunteers are needed
+            - level1: number of volunteers needed for l1(or user might mention level 1) support, 0 if user says no level1 volunteers are needed
+            - level2: number of volunteers needed for l2(or user may mention level 2) support, 0 if user says no level2 volunteers are needed
             - date: the date on which the interview is scheduled (must be a valid future date)
             - email: email of the admin user who scheduled the interview
 
@@ -69,6 +69,13 @@ async def schedule_interview(level1: int, level2: int, level3: int, interviewdat
     try:
         if DB_SESSION is None:
             return {"error": "DB session not initialized"}
+        
+        result = await DB_SESSION.execute(
+        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
+        )
+        latest_record = result.scalar_one_or_none()
+        if(email != latest_record.session_id):
+            return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
 
         result = await DB_SESSION.execute(select(Admin).where(Admin.email == email))
         admin = result.scalar_one_or_none()
@@ -92,7 +99,6 @@ async def schedule_interview(level1: int, level2: int, level3: int, interviewdat
             admin_id=admin.id,
             l1_count=level1,
             l2_count=level2,
-            l3_count=level3,
             interview_date=parsed_date,
             is_active=True
         )
@@ -104,7 +110,7 @@ async def schedule_interview(level1: int, level2: int, level3: int, interviewdat
     except Exception as e:
         return {"error": "Exception", "details": str(e)}
     
-@tool("check_interview", description = 'this tool can be used to check for active interviews and tell the user')
+@tool("check_interview", description = 'this tool can be used to check for active interviews/schedules interviews and tell the user')
 async def check_interview():
     result = await DB_SESSION.execute(select(Interview).where(Interview.is_active == True))
     interviews = result.scalars().all()
@@ -115,14 +121,49 @@ async def check_interview():
         interview_dates = [interview.interview_date for interview in interviews]
         return {'response' : f'yes, there are interviews scheduled on {interview_dates}'}
     
-@tool("volunteer_interview", description="This tool can be used to create a new volunteer using their email")
-async def volunteer_interview(email : str, date : str):
+@tool('get_interview_requirements', description='This tool can be used when the user asks about the requirements of a particular or group of interviews')
+async def get_interview_requirements(dates : list):
+    """
+    This tool gets the requirements of scheduled interviews using the list of interview dates
+
+    args: 
+        - dates : list of dates of interviews of which the user has asked details of. list stores single date if the user asks requirements
+            of a particular interview or else stores the dates of all interviews that the user has asked details of
+
+    returns:
+        - response: requirements of all scheduled interviews
+    raises: 
+        - Exception:  If the external API call fails
+    """
+    try: 
+        interviews = []
+        for day in dates:
+            parsed_date = datetime.strptime(day, "%Y-%m-%d").date()
+            result = await DB_SESSION.execute(select(Interview).where(Interview.interview_date == parsed_date))
+            interview = result.scalar_one_or_none()
+            interviews.append({
+                'interview_date' : interview.interview_date,
+                'l1_requirement' : f'{interview.l1_count} person(s) needed',
+                'l2_requirement' : f'{interview.l2_count} people(s) needed'
+            })
+        return {'response' : f'these are the requirements of the interview(s): \n {interviews}'}
+    except Exception as e:
+        return {"error": "Exception", "details": str(e)}
+
+
+
+    
+@tool("volunteer_interview", description="This tool can be used to create a new volunteer using their email, date of interview and level of interview they want to support")
+async def volunteer_interview(email : str, day : str, level : str):
     """
     This tool inserts a column in the 'temporary' table based on the user's request.
 
     args:
             - email: email of the volunteer who makes the request
-            - date: the date of interview for which the user is volunteering
+            - day: the date of interview for which the user is volunteering
+            - level: the level of the interview for which the user is volunteering. If user says 
+                        'level1' or 'level 1' or 'l1' or similar as level = '1' and 
+                        'level2' or 'level 2' or 'l2' or similar as level = '2'
     Returns:
             dict: JSON response for volunteer request added or not allowed to volunteer
 
@@ -132,21 +173,38 @@ async def volunteer_interview(email : str, date : str):
     print()
     print(email)
     print()
+    print(type(level), level)
+    print()
     
     try:
-        result = await DB_SESSION.execute(select(Employee).where(Employee.email == email))
-        employee = result.scalar_one_or_none()
-
-        if not employee:
-            return {'response' : 'this email is not allowed to volunteer for interview support'}
+        result = await DB_SESSION.execute(
+        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
+        )
+        latest_record = result.scalar_one_or_none()
+        if(email != latest_record.session_id):
+            return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
         
-        parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
+        parsed_date = datetime.strptime(day, "%Y-%m-%d").date()
         result = await DB_SESSION.execute(select(Interview).where(Interview.interview_date == parsed_date))
         interview = result.scalar_one_or_none()
 
         if not interview:
             return {'response' : f'no interview scheduled on {parsed_date}'}
+        
+        result = await DB_SESSION.execute(select(Employee).where(Employee.email == email))
+        employee = result.scalar_one_or_none()
 
+        if not employee:
+            return {'response' : 'this email is not allowed to volunteer for interview support'}
+        elif employee:
+            if(level in ('2','level 2', 'level2', 'l2') and employee.experience < 6):
+                return {'response' : 'you do not have enough experience to volunteer for l2 support, you can volunteer for l1 instead'}
+            
+        if(level in ('1','level 1', 'level1', 'l1') and interview.l1_count == 0):
+            return {'response' : 'there is no requirement for l1 support for this interview'}
+        if(level in ('2','level 2', 'level2', 'l2') and interview.l2_count == 0):
+            return {'response' : 'there is no requirement for l2 support for this interview'}
+        
         result = await DB_SESSION.execute(select(Admin).where(Admin.id == interview.admin_id))
         admin = result.scalar_one_or_none()
 
@@ -154,6 +212,7 @@ async def volunteer_interview(email : str, date : str):
             first_name = employee.first_name,
             last_name = employee.last_name,
             email = email,
+            level_chosen = level,
             admin_email = admin.email,
             interview_count = employee.interview_count
         )
@@ -186,6 +245,13 @@ async def show_volunteers(email : str):
     """
     if not email:
         return {'response' : 'provide your email id'}
+    result = await DB_SESSION.execute(
+        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
+        )
+    latest_record = result.scalar_one_or_none()
+    if(email != latest_record.session_id):
+        return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
+    
     result = await DB_SESSION.execute(select(Temp).where(Temp.admin_email == email))
     applicants = result.scalars().all()
     
@@ -198,6 +264,7 @@ async def show_volunteers(email : str):
             "first_name": a.first_name,
             "last_name": a.last_name,
             "email": a.email,
+            "level_chosen" : a.level_chosen,
             "interview_count": a.interview_count,
             "created_at": a.created_at.isoformat() if a.created_at else None
         }
@@ -234,6 +301,12 @@ async def end_interview(email : str):
     Raises:
             Exception: If the external API call fails
     """
+    result = await DB_SESSION.execute(
+        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
+        )
+    latest_record = result.scalar_one_or_none()
+    if(email != latest_record.session_id):
+        return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
     result = await DB_SESSION.execute(select(Admin).where(Admin.email == email))
     admin = result.scalar_one_or_none()
     

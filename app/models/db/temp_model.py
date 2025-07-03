@@ -11,6 +11,7 @@ class Temp(Base):
     id = Column(Integer, primary_key=True, index=True)
     first_name = Column(String, nullable=False)
     last_name = Column(Text)
+    level_chosen = Column(String, nullable = False)
     email = Column(String, unique = True)
     admin_email = Column(String, nullable = False)
     interview_count = Column(Integer)

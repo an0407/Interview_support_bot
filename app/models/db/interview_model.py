@@ -14,7 +14,6 @@ class Interview(Base):
     interview_date = Column(Date)
     l1_count = Column(Integer)
     l2_count = Column(Integer)
-    l3_count = Column(Integer)
     is_active = Column(Boolean)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default = None)
