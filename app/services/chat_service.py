@@ -7,7 +7,7 @@ from langchain.agents import AgentExecutor, create_openai_functions_agent
 from langchain.memory import ConversationBufferMemory
 
 from app.models.pydantic.chat_payload import AdminPayload
-from app.utils.tools import (set_db_session, schedule_interview, check_interview, get_interview_requirements, volunteer_interview, show_volunteers,
+from app.utils.tools import (set_db_session, send_otp, verify_otp, schedule_interview, check_interview, get_interview_requirements, volunteer_interview, show_volunteers,
                              finalize_volunteers, end_interview)
 from app.services.memory_manager import MemoryManager
 
@@ -19,7 +19,7 @@ llm = ChatOpenAI(model = 'gpt-4o-mini')
 class ChatService():
     def __init__(self, db: AsyncSession):
         set_db_session(db)
-        self.tools = [schedule_interview, check_interview, get_interview_requirements, volunteer_interview, show_volunteers, 
+        self.tools = [send_otp, verify_otp, schedule_interview, check_interview, get_interview_requirements, volunteer_interview, show_volunteers, 
                       finalize_volunteers, end_interview]
         self.prompt = hub.pull("hwchase17/openai-functions-agent")
         self.memory_manager = MemoryManager(db)

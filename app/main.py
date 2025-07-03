@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
+import smtplib
 
 from app.database import Base, engine
 from app.routers import chat_router, db_populate_router
@@ -17,11 +18,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+sender_email = 'anush.softsuave@gmail.com'
+receiver_email = 'anush.softsuave@wuwu.com'
+subject = 'Test Email'
+message = 'this email was sent using python'
+
+text = f"subject: {subject}\n\n{message}"
+
+
+
+@app.get('/send-email')
+def send_email():
+    server = smtplib.SMTP('smtp.gmail.com',587)
+    server.starttls()
+    server.login(sender_email, 'mzss rirg ugqu dwgk')
+    server.sendmail(sender_email, receiver_email, text)
+
+    return {'msg' : 'email sent'}
+
 # 2. Include API router
 app.include_router(chat_router.router)
 app.include_router(db_populate_router.router)
 
 # 3. Serve the chatbot UI
-@app.get("/", response_class=HTMLResponse)
+@app.get("/chatbot", response_class=HTMLResponse)
 async def chatbot_ui(request: Request):
     return templates.TemplateResponse("chat.html", {"request": request})

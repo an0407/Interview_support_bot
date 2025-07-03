@@ -5,6 +5,8 @@ from sqlalchemy import select, update, delete, desc
 from datetime import date, datetime
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
+import smtplib
+import random
 
 from app.models.db.admin_model import Admin
 from app.models.db.interview_model import Interview
@@ -21,6 +23,14 @@ def set_db_session(session: AsyncSession):
     global DB_SESSION
     DB_SESSION = session
 
+def send_email(receiver_email : str, subject: str, message : str):
+    text = f"subject: {subject}\n\n{message}"
+    server = smtplib.SMTP('smtp.gmail.com',587)
+    server.starttls()
+    server.login('anush.softsuave@gmail.com', 'mzss rirg ugqu dwgk')
+    server.sendmail('anush.softsuave@gmail.com', receiver_email, text)
+
+otp_list = [123456]
 # @tool
 # def validate_query(query: str) -> bool:
 #     """
@@ -49,16 +59,48 @@ def set_db_session(session: AsyncSession):
 #     print("[inside tool - response]", response.content)
 #     return response.content.strip().lower() == "yes"
 
-@tool("schedule_interview", description=f"This tool can be used when a user wants to schedule/create a new interview. Note: Today's date is {date.today().isoformat()}")
-async def schedule_interview(level1: int, level2: int, interviewdate: str, email: str) -> dict:
+@tool('send_otp', description="this tool must be strictly called whenever a user mentions their email id or when the user's otp is not verified")
+def send_otp(receiver_email: str):
+    """
+    This tool is used to send an otp to the email mentioned by the user as their email
+
+    args:
+        - receiver_email : The email that the user mentions as their email
+
+    returns:
+        - response : otp sent to ur email, send it here to verify email
+    """
+    otp = random.randint(100000,999999)
+    otp_list[0] = otp
+    send_email(receiver_email=receiver_email, subject='OTP', message=f'your otp is {otp}')
+    return {'response' : 'otp sent to ur email, send it here to verify email'}
+
+@tool('verify_otp', description="This tool can be used to verify the otp that the user returns")
+def verify_otp(otp : int):
+    """
+    This tool is used to verify the otp sent to the user's email, that the user sends back to verify their email
+
+    args:
+        - otp : The number that the user mentions as their received otp
+
+    returns:
+        - response : otp matched, email is verified or otp mismatched, confirm the new otp sent to ur email
+    """
+    if(otp == otp_list[0]):
+        return {'response' : 'otp matches, your email id is verified'}
+    return {'response' : 'otp mismatched, resend your correct email id'}
+
+
+@tool("schedule_interview", description=f"This tool can be used when a user wants to schedule/create a new interview if their email has been verified, else don't run this tool yet even if all the variables required for this tool are already provided by the user Note: Today's date is {date.today().isoformat()}")
+async def schedule_interview(email: str, level1_count: int, level2_count: int, interviewdate: str) -> dict:
     """
         This tool inserts a column in the 'interviews' table based on the user's request.
 
         args:
+            - email: email of the admin user who scheduled the interview
             - level1: number of volunteers needed for l1(or user might mention level 1) support, 0 if user says no level1 volunteers are needed
             - level2: number of volunteers needed for l2(or user may mention level 2) support, 0 if user says no level2 volunteers are needed
             - date: the date on which the interview is scheduled (must be a valid future date)
-            - email: email of the admin user who scheduled the interview
 
         Returns:
             dict: JSON response for interview scheduled or not authorised message
@@ -66,16 +108,12 @@ async def schedule_interview(level1: int, level2: int, interviewdate: str, email
         Raises:
             Exception: If the external API call fails
         """
+    print()
+    print(email, level1_count, level2_count, interviewdate)
+    print()
     try:
         if DB_SESSION is None:
             return {"error": "DB session not initialized"}
-        
-        result = await DB_SESSION.execute(
-        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
-        )
-        latest_record = result.scalar_one_or_none()
-        if(email != latest_record.session_id):
-            return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
 
         result = await DB_SESSION.execute(select(Admin).where(Admin.email == email))
         admin = result.scalar_one_or_none()
@@ -94,19 +132,24 @@ async def schedule_interview(level1: int, level2: int, interviewdate: str, email
         interview = result.scalar_one_or_none()
         if interview:
             return {"response" : "interview is already scheduled on this day"}
-
-        interview = Interview(
-            admin_id=admin.id,
-            l1_count=level1,
-            l2_count=level2,
-            interview_date=parsed_date,
-            is_active=True
-        )
-        DB_SESSION.add(interview)
-        await DB_SESSION.commit()
-        await DB_SESSION.refresh(interview)
-
-        return {"message": "interview scheduled successfully"}
+        else:
+            result = await DB_SESSION.execute(select(Employee))
+            employees = result.scalars().all()
+            for employee in employees:
+                send_email(receiver_email=employee.email, subject='Interview Scheduled', message=f"""An interview has been scheduled on 
+                        {parsed_date}.\n you can contact the "interview support chatbot" if you want to know details of interview or volunteer
+                        \n\nRegards\n{admin.first_name} {admin.last_name}""")
+            interview = Interview(
+                admin_id=admin.id,
+                l1_count=level1_count,
+                l2_count=level2_count,
+                interview_date=parsed_date,
+                is_active=True
+            )
+            DB_SESSION.add(interview)
+            await DB_SESSION.commit()
+            await DB_SESSION.refresh(interview)
+            return {"message": "interview scheduled successfully, and mail sent to all eligible candidates"}
     except Exception as e:
         return {"error": "Exception", "details": str(e)}
     
@@ -153,7 +196,8 @@ async def get_interview_requirements(dates : list):
 
 
     
-@tool("volunteer_interview", description="This tool can be used to create a new volunteer using their email, date of interview and level of interview they want to support")
+@tool("volunteer_interview", description="This tool can be used to create a new volunteer using their email, date of interview and level of interview they want to support only if their email has been verified,. If not don't run this tool yet even if all the variables required for this tool are already provided by the user." \
+"also 'level' is the level of the interview for which the user is volunteering. If user says 'level1' or 'level 1' or 'l1' or similar as level = '1' and level2' or 'level 2' or 'l2' or similar as level = '2'")
 async def volunteer_interview(email : str, day : str, level : str):
     """
     This tool inserts a column in the 'temporary' table based on the user's request.
@@ -177,13 +221,6 @@ async def volunteer_interview(email : str, day : str, level : str):
     print()
     
     try:
-        result = await DB_SESSION.execute(
-        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
-        )
-        latest_record = result.scalar_one_or_none()
-        if(email != latest_record.session_id):
-            return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
-        
         parsed_date = datetime.strptime(day, "%Y-%m-%d").date()
         result = await DB_SESSION.execute(select(Interview).where(Interview.interview_date == parsed_date))
         interview = result.scalar_one_or_none()
@@ -220,14 +257,17 @@ async def volunteer_interview(email : str, day : str, level : str):
         print(temporary)
         print()
 
+        send_email(receiver_email= email, subject='Requested for Volunteering', message=f"""You have successfully submitted your request 
+                   for volunteering for L{level} support on {day}\n\nregards:\nInterview support bot""")
+
         DB_SESSION.add(temporary)
         await DB_SESSION.commit()
 
-        return {'repsonse' : 'volunteer request added successfully'}
+        return {'repsonse' : 'volunteer request added successfully, you would have received a confirmation email'}
     except Exception as e:
         return {"error": "Exception", "details": str(e)}
     
-@tool('show_volunteers', description='this tool can be used to show all the volunteers when the admin asks')
+@tool('show_volunteers', description='this tool can be used to show all the volunteers when the admin asks only if their email has been verified')
 async def show_volunteers(email : str):
     """
     This tool checks who and all have applied for interview 
@@ -245,12 +285,6 @@ async def show_volunteers(email : str):
     """
     if not email:
         return {'response' : 'provide your email id'}
-    result = await DB_SESSION.execute(
-        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
-        )
-    latest_record = result.scalar_one_or_none()
-    if(email != latest_record.session_id):
-        return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
     
     result = await DB_SESSION.execute(select(Temp).where(Temp.admin_email == email))
     applicants = result.scalars().all()
@@ -273,12 +307,13 @@ async def show_volunteers(email : str):
 
     return {'volunteers': applicant_list}
 
-@tool('finalize_volunteers', description='this tool can be used when the user selects the final volunteers from the list of volunteers')
+@tool('finalize_volunteers', description='this tool can be used when the user selects the final volunteers from the list of volunteers only if the user email has been verified')
 async def finalize_volunteers(volunteer_emails : list):
     """
     args: 
         - volunteer_emails: list of emails of the selected volunteers"""
     for email in volunteer_emails:
+        send_email(receiver_email=email, subject= 'Volunteer Request Approved', message='Your request for interview support has been approved\n\nRegards:\nInterview support Chatbot ')
         await DB_SESSION.execute(
             update(Employee)
             .where(Employee.email == email)
@@ -286,7 +321,7 @@ async def finalize_volunteers(volunteer_emails : list):
     return {'response' : 'email sent to the selected volunteers! Do you want to end the volunteering process?'}
 
 
-@tool('end_interview', description='this tool can be used when a user confirms that they want to end the interview volunteering process')
+@tool('end_interview', description='this tool can be used when a user confirms that they want to end the interview volunteering process only if thier email is verified')
 async def end_interview(email : str):
     """
     This tool deletes all values from the temporary table and sets 'is_active' = False in the interviews table
@@ -301,12 +336,6 @@ async def end_interview(email : str):
     Raises:
             Exception: If the external API call fails
     """
-    result = await DB_SESSION.execute(
-        select(ChatHistory).order_by(desc(ChatHistory.created_at)).limit(1)
-        )
-    latest_record = result.scalar_one_or_none()
-    if(email != latest_record.session_id):
-        return {'Response' : 'You can not provide the email of another user, email must be same as entered in "session ID"'}
     result = await DB_SESSION.execute(select(Admin).where(Admin.email == email))
     admin = result.scalar_one_or_none()
     
