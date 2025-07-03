@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Interview Support Chatbot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      background-color: #f7f7f7;
+    }
+    #chat-box {
+      width: 100%;
+      max-width: 700px;
+      margin: auto;
+      border: 1px solid #ccc;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      height: 500px;
+      overflow-y: scroll;
+    }
+    .message {
+      margin-bottom: 15px;
+    }
+    .user {
+      font-weight: bold;
+      color: #00529b;
+    }
+    .bot {
+      color: #333;
+    }
+    #input-section {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    #query, #session_id {
+      width: 40%;
+      padding: 10px;
+      margin-right: 10px;
+      border-radius: 5px;
+      border: 1px solid #ccc;
+    }
+    #send {
+      padding: 10px 20px;
+      background-color: #00529b;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #send:hover {
+      background-color: #003f7f;
+    }
+  </style>
+</head>
+<body>
+
+<h2 style="text-align:center;">Interview Support Chatbot</h2>
+
+<div style="text-align:center; margin-bottom:10px;">
+  <input type="text" id="session_id" placeholder="Enter your email (session ID)" />
+</div>
+
+<div id="chat-box"></div>
+
+<div id="input-section">
+  <input type="text" id="query" placeholder="Ask your query..." />
+  <button id="send">Send</button>
+</div>
+
+<script>
+  const chatBox = document.getElementById("chat-box");
+  const queryInput = document.getElementById("query");
+  const sessionInput = document.getElementById("session_id");
+  const sendBtn = document.getElementById("send");
+
+  function appendMessage(sender, text) {
+    const messageEl = document.createElement("div");
+    messageEl.classList.add("message");
+    messageEl.innerHTML = `<span class="${sender}">${sender}:</span> ${text}`;
+    chatBox.appendChild(messageEl);
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  async function sendMessage() {
+    const query = queryInput.value.trim();
+    const sessionId = sessionInput.value.trim();
+
+    if (!query || !sessionId) {
+      alert("Please enter both session ID (email) and query.");
+      return;
+    }
+
+    appendMessage("user", query);
+    queryInput.value = "";
+
+    try {
+      const response = await fetch("/chat/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          query: query,
+        }),
+      });
+
+      const data = await response.json();
+      appendMessage("bot", data.response || "No response");
+    } catch (error) {
+      appendMessage("bot", "Error sending message");
+    }
+  }
+
+  sendBtn.addEventListener("click", sendMessage);
+
+  // ✅ Trigger send on Enter key
+  queryInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      sendMessage();
+    }
+  });
+</script>
+
+</body>
+</html>
