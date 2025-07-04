@@ -161,9 +161,9 @@ async def schedule_interview(email: str, level1_volunteers_count: int, level2_vo
     except Exception as e:
         return {"error": "Exception", "details": str(e)}
     
-@tool("check_interview", description = 'this tool can be used to check for active interviews/schedules interviews and tell the user when they enquire to know if any interviews are there/active')
+@tool("check_interview", description = 'this tool can be used to check for active interviews/schedules and tell the user when they enquire to know if any interviews are there/active or even if they say they want to apply/volunteer for an interview')
 async def check_interview():
-    result = await DB_SESSION.execute(select(Interview).where(Interview.is_active == True))
+    result = await DB_SESSION.execute(select(Interview).where(Interview.is_active == 1))
     interviews = result.scalars().all()
 
     if not interviews:
@@ -235,6 +235,11 @@ async def volunteer_interview(email : str, day : str):
         if not interview:
             return {'response' : f'no interview scheduled on {parsed_date}'}
         
+        result = await DB_SESSION.execute(select(Temp).where(Temp.email == email, Temp.interview_date == parsed_date))
+        temp = result.scalar_one_or_none()
+        if temp:
+            return {'response' : 'You have already applied for volunteering for an interview on this day'}
+        
         result = await DB_SESSION.execute(select(Employee).where(Employee.email == email))
         employee = result.scalar_one_or_none()
 
@@ -250,6 +255,7 @@ async def volunteer_interview(email : str, day : str):
                 last_name = employee.last_name,
                 email = email,
                 level_chosen = 'L1',
+                interview_date = parsed_date,
                 admin_email = admin.email,
                 interview_count = employee.interview_count
                 )
@@ -266,6 +272,7 @@ async def volunteer_interview(email : str, day : str):
                 last_name = employee.last_name,
                 email = email,
                 level_chosen = 'L2',
+                interview_date = parsed_date,
                 admin_email = admin.email,
                 interview_count = employee.interview_count
                 )
@@ -276,6 +283,23 @@ async def volunteer_interview(email : str, day : str):
                 await DB_SESSION.commit()
 
                 return {'repsonse' : 'volunteer request added successfully, you would have received a confirmation email'}
+            elif(employee.experience == 6 and interview.l2_count == 0 and interview.l1_count > 0):
+                temporary = Temp(
+                first_name = employee.first_name,
+                last_name = employee.last_name,
+                email = email,
+                level_chosen = 'L1',
+                interview_date = parsed_date,
+                admin_email = admin.email,
+                interview_count = employee.interview_count
+                )
+                send_email(receiver_email= email, subject='Requested for Volunteering', message=f"""You have successfully submitted your request 
+                    for volunteering for L1 support on {day}\n\nregards:\nInterview support bot""")
+            
+                DB_SESSION.add(temporary)
+                await DB_SESSION.commit()
+
+                return {'repsonse' : 'volunteer request added successfully for L1 since you are eligible for L1 also. This is because there are no requirements for l2 for this interview, you would have received a confirmation email'}
             else:
                 return {'response' : f'there are no requirements for the level you are eligible for in interview on {parsed_date}'}
     except Exception as e:
