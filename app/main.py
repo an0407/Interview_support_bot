@@ -18,25 +18,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-
-sender_email = 'anush.softsuave@gmail.com'
-receiver_email = 'anush.softsuave@wuwu.com'
-subject = 'Test Email'
-message = 'this email was sent using python'
-
-text = f"subject: {subject}\n\n{message}"
-
-
-
-@app.get('/send-email')
-def send_email():
-    server = smtplib.SMTP('smtp.gmail.com',587)
-    server.starttls()
-    server.login(sender_email, 'mzss rirg ugqu dwgk')
-    server.sendmail(sender_email, receiver_email, text)
-
-    return {'msg' : 'email sent'}
-
 # 2. Include API router
 app.include_router(chat_router.router)
 app.include_router(db_populate_router.router)

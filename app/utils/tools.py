@@ -92,16 +92,17 @@ def verify_otp(otp : int):
 
 
 @tool("schedule_interview", description=f"This tool can be used when a user wants to schedule/create a new interview if their email has been verified, else don't run this tool yet even if all the variables required for this tool are already provided by the user Note: Today's date is {date.today().isoformat()}")
-async def schedule_interview(email: str, level1_count: int, level2_count: int, interviewdate: str) -> dict:
+async def schedule_interview(email: str, level1_volunteers_count: int, level2_volunteers_count: int, interviewdate: str, 
+                             last_date_to_volunteer : str) -> dict:
     """
         This tool inserts a column in the 'interviews' table based on the user's request.
 
         args:
             - email: email of the admin user who scheduled the interview
-            - level1: number of volunteers needed for l1(or user might mention level 1) support, 0 if user says no level1 volunteers are needed
-            - level2: number of volunteers needed for l2(or user may mention level 2) support, 0 if user says no level2 volunteers are needed
+            - level1_volunteers_count: number of volunteers needed for l1(or user might mention level 1 or similar terms) support, 0 if user says no level1 volunteers are needed
+            - level2_volunteers_count: number of volunteers needed for l2(or user may mention level 2 or similar terms) support, 0 if user says no level2 volunteers are needed
             - date: the date on which the interview is scheduled (must be a valid future date)
-
+            - last_date_to_volunteer: The last date before which the employees may submit their volunteering request
         Returns:
             dict: JSON response for interview scheduled or not authorised message
 
@@ -109,7 +110,7 @@ async def schedule_interview(email: str, level1_count: int, level2_count: int, i
             Exception: If the external API call fails
         """
     print()
-    print(email, level1_count, level2_count, interviewdate)
+    print(email, level1_volunteers_count, level2_volunteers_count, interviewdate)
     print()
     try:
         if DB_SESSION is None:
@@ -128,21 +129,28 @@ async def schedule_interview(email: str, level1_count: int, level2_count: int, i
         print(f"parsed_date: {parsed_date}")
         print()
 
-        result = await DB_SESSION.execute(select(Interview).where(Interview.interview_date == parsed_date))
+        last_date = datetime.strptime(last_date_to_volunteer, "%Y-%m-%d").date()
+
+        result = await DB_SESSION.execute(select(Interview).where(Interview.interview_date == parsed_date, Interview.is_active == True))
         interview = result.scalar_one_or_none()
         if interview:
             return {"response" : "interview is already scheduled on this day"}
         else:
+            send_email(receiver_email=email, subject='Interview Scheduled Successfully', message=f"""The interview has been 
+                       successfully scheduled on {interviewdate}, with requirements - L1:{level1_volunteers_count}, 
+                       L2:{level2_volunteers_count}.
+                        \n\nRegards\nInterview Suppport Chatbot""")
             result = await DB_SESSION.execute(select(Employee))
             employees = result.scalars().all()
             for employee in employees:
-                send_email(receiver_email=employee.email, subject='Interview Scheduled', message=f"""An interview has been scheduled on 
+                send_email(receiver_email=employee.email, subject='New Interview Scheduled', message=f"""An interview has been scheduled on 
                         {parsed_date}.\n you can contact the "interview support chatbot" if you want to know details of interview or volunteer
+                        for the interview support. Last Date for submitting volunteering interest is {last_date}.
                         \n\nRegards\n{admin.first_name} {admin.last_name}""")
             interview = Interview(
                 admin_id=admin.id,
-                l1_count=level1_count,
-                l2_count=level2_count,
+                l1_count=level1_volunteers_count,
+                l2_count=level2_volunteers_count,
                 interview_date=parsed_date,
                 is_active=True
             )
@@ -153,7 +161,7 @@ async def schedule_interview(email: str, level1_count: int, level2_count: int, i
     except Exception as e:
         return {"error": "Exception", "details": str(e)}
     
-@tool("check_interview", description = 'this tool can be used to check for active interviews/schedules interviews and tell the user')
+@tool("check_interview", description = 'this tool can be used to check for active interviews/schedules interviews and tell the user when they enquire to know if any interviews are there/active')
 async def check_interview():
     result = await DB_SESSION.execute(select(Interview).where(Interview.is_active == True))
     interviews = result.scalars().all()
@@ -161,8 +169,12 @@ async def check_interview():
     if not interviews:
         return {'response' : 'no active interviews'}
     else:
-        interview_dates = [interview.interview_date for interview in interviews]
-        return {'response' : f'yes, there are interviews scheduled on {interview_dates}'}
+        active_interviews = [{
+                'interview_date' : interview.interview_date,
+                'l1_requirement' : f'{interview.l1_count} person(s) needed',
+                'l2_requirement' : f'{interview.l2_count} people(s) needed'
+            } for interview in interviews]
+        return {'response' : f'yes, there are interviews scheduled on the following days with the respective requirements: {active_interviews}'}
     
 @tool('get_interview_requirements', description='This tool can be used when the user asks about the requirements of a particular or group of interviews')
 async def get_interview_requirements(dates : list):
@@ -196,18 +208,15 @@ async def get_interview_requirements(dates : list):
 
 
     
-@tool("volunteer_interview", description="This tool can be used to create a new volunteer using their email, date of interview and level of interview they want to support only if their email has been verified,. If not don't run this tool yet even if all the variables required for this tool are already provided by the user." \
-"also 'level' is the level of the interview for which the user is volunteering. If user says 'level1' or 'level 1' or 'l1' or similar as level = '1' and level2' or 'level 2' or 'l2' or similar as level = '2'")
-async def volunteer_interview(email : str, day : str, level : str):
+@tool("volunteer_interview", description="This tool can be used when a user wants to volunteer or apply for an interview, to create a new volunteer using their email and date of interview only if their email has been verified. If not don't run this tool yet even if all the variables required for this tool are already provided by the user.")
+async def volunteer_interview(email : str, day : str):
     """
-    This tool inserts a column in the 'temporary' table based on the user's request.
+    This tool inserts a column in the 'temporary' table based on the user's request, user is automatically 
+    matched to level 1 or 2 based on their experience that we can check using their email.
 
     args:
             - email: email of the volunteer who makes the request
             - day: the date of interview for which the user is volunteering
-            - level: the level of the interview for which the user is volunteering. If user says 
-                        'level1' or 'level 1' or 'l1' or similar as level = '1' and 
-                        'level2' or 'level 2' or 'l2' or similar as level = '2'
     Returns:
             dict: JSON response for volunteer request added or not allowed to volunteer
 
@@ -216,8 +225,6 @@ async def volunteer_interview(email : str, day : str, level : str):
     """
     print()
     print(email)
-    print()
-    print(type(level), level)
     print()
     
     try:
@@ -231,39 +238,46 @@ async def volunteer_interview(email : str, day : str, level : str):
         result = await DB_SESSION.execute(select(Employee).where(Employee.email == email))
         employee = result.scalar_one_or_none()
 
-        if not employee:
-            return {'response' : 'this email is not allowed to volunteer for interview support'}
-        elif employee:
-            if(level in ('2','level 2', 'level2', 'l2') and employee.experience < 6):
-                return {'response' : 'you do not have enough experience to volunteer for l2 support, you can volunteer for l1 instead'}
-            
-        if(level in ('1','level 1', 'level1', 'l1') and interview.l1_count == 0):
-            return {'response' : 'there is no requirement for l1 support for this interview'}
-        if(level in ('2','level 2', 'level2', 'l2') and interview.l2_count == 0):
-            return {'response' : 'there is no requirement for l2 support for this interview'}
-        
         result = await DB_SESSION.execute(select(Admin).where(Admin.id == interview.admin_id))
         admin = result.scalar_one_or_none()
 
-        temporary = Temp(
-            first_name = employee.first_name,
-            last_name = employee.last_name,
-            email = email,
-            level_chosen = level,
-            admin_email = admin.email,
-            interview_count = employee.interview_count
-        )
-        print()
-        print(temporary)
-        print()
+        if not employee:
+            return {'response' : 'this email is not allowed to volunteer for interview support'}
+        elif employee:
+            if(employee.experience == 3 and interview.l1_count > 0):
+                temporary = Temp(
+                first_name = employee.first_name,
+                last_name = employee.last_name,
+                email = email,
+                level_chosen = 'L1',
+                admin_email = admin.email,
+                interview_count = employee.interview_count
+                )
+                send_email(receiver_email= email, subject='Requested for Volunteering', message=f"""You have successfully submitted your request 
+                    for volunteering for L1 support on {day}\n\nregards:\nInterview support bot""")
+            
+                DB_SESSION.add(temporary)
+                await DB_SESSION.commit()
 
-        send_email(receiver_email= email, subject='Requested for Volunteering', message=f"""You have successfully submitted your request 
-                   for volunteering for L{level} support on {day}\n\nregards:\nInterview support bot""")
+                return {'repsonse' : 'volunteer request added successfully, you would have received a confirmation email'}
+            elif(employee.experience == 6 and interview.l2_count > 0):
+                temporary = Temp(
+                first_name = employee.first_name,
+                last_name = employee.last_name,
+                email = email,
+                level_chosen = 'L2',
+                admin_email = admin.email,
+                interview_count = employee.interview_count
+                )
+                send_email(receiver_email= email, subject='Requested for Volunteering', message=f"""You have successfully submitted your request 
+                    for volunteering for L2 support on {day}\n\nregards:\nInterview support bot""")
+            
+                DB_SESSION.add(temporary)
+                await DB_SESSION.commit()
 
-        DB_SESSION.add(temporary)
-        await DB_SESSION.commit()
-
-        return {'repsonse' : 'volunteer request added successfully, you would have received a confirmation email'}
+                return {'repsonse' : 'volunteer request added successfully, you would have received a confirmation email'}
+            else:
+                return {'response' : f'there are no requirements for the level you are eligible for in interview on {parsed_date}'}
     except Exception as e:
         return {"error": "Exception", "details": str(e)}
     
@@ -307,11 +321,12 @@ async def show_volunteers(email : str):
 
     return {'volunteers': applicant_list}
 
-@tool('finalize_volunteers', description='this tool can be used when the user selects the final volunteers from the list of volunteers only if the user email has been verified')
+@tool('finalize_volunteers', description="this tool can be used whenever the user's message hints that they are selecting a particular or group of candidates(example: send confirmation email to the first guy or send confirmation email to the first 4 guys, or anything else that suggests that the admin is selecting a list of candidates or one of the candidates), only if the user's email has been verified")
 async def finalize_volunteers(volunteer_emails : list):
     """
     args: 
-        - volunteer_emails: list of emails of the selected volunteers"""
+        - volunteer_emails: list of emails of the selected volunteers
+    """
     for email in volunteer_emails:
         send_email(receiver_email=email, subject= 'Volunteer Request Approved', message='Your request for interview support has been approved\n\nRegards:\nInterview support Chatbot ')
         await DB_SESSION.execute(
